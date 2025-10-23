@@ -1,0 +1,1152 @@
+#---------------------------------------------------------------------OMBOT--------------------------------------------------
+
+
+#things to do:
+
+#       Finish FE process Function dictionary
+#       Keep an eye on the stale retries - i believe iframes issues may cause crashes.
+#       Really need to create safe crashing.
+#       missing info, seems to break click when theres stuff jmissing
+from selenium import webdriver 
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException
+from datetime import datetime
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
+import pandas as pd 
+import time
+import re
+
+
+
+#-----------------------------------------------------------------HELPER FUNCTION DICTIONARY--------------------------------------------------
+
+
+
+def retry_on_stale(max_retries=3):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (StaleElementReferenceException, TimeoutException) as e:
+                    print(f"Attempt {attempt+1} failed: {type(e).__name__}, retrying...")
+                    time.sleep(0.5)  # optional short pause between retries
+            # Final attempt
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@retry_on_stale(max_retries=3)
+def get_rows_from_table(table):
+    try:
+        return table.find_elements(By.XPATH, ".//tbody/tr")
+    except StaleElementReferenceException:
+        print("get_rows_from_table: table went stale, returning empty list")
+        return []
+
+def find_element(by, locator, timeout=20, retries=3, delay=1, frame_func=None):
+    for attempt in range(retries):
+        try:
+            if frame_func:
+                frame_func()  # switch to iframe
+
+            element = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((by, locator))
+            )
+            return element
+
+        except (StaleElementReferenceException, TimeoutException, NoSuchElementException) as e:
+            print(f"[Attempt {attempt+1}/{retries}] Retrying find_element due to {type(e).__name__}")
+            time.sleep(delay)
+            continue
+
+    print(f"safe_find_element: failed to locate {locator} after {retries} retries")
+    return None
+
+@retry_on_stale(max_retries=3)
+def click_element(locator, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            element = WebDriverWait(driver, 20).until(
+                EC.element_to_be_clickable(locator)
+            )
+            element.click()
+            return
+        except StaleElementReferenceException:
+            print(f"[Attempt {attempt+1}] Stale element, retrying...")
+            time.sleep(0.5)
+        except TimeoutException:
+            print(f"[Attempt {attempt+1}] Timeout waiting for element, retrying...")
+            time.sleep(0.5)
+    
+    element = WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable(locator)
+    )
+    element.click()
+
+@retry_on_stale(max_retries=3)
+def select_dropdown_option(locator, value):
+    dropdown = WebDriverWait(driver, 20).until(EC.element_to_be_clickable(locator))
+    select = Select(dropdown)
+    select.select_by_value(value)  # Select option by its value #
+
+@retry_on_stale(max_retries=3)
+def get_element_text(locator):
+    try:
+        return driver.find_element(locator[0], locator[1]).text.strip()  # Strip extra spaces
+    except NoSuchElementException:
+        return ""
+
+@retry_on_stale(max_retries=3)
+def click_progress(coursename):
+    time.sleep(0.5)
+    coursename = str(coursename).lower().strip()
+    
+    switchframetomodpop1()
+    try:
+        table = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "listtable"))
+        )
+
+        rows = table.find_elements(By.XPATH, ".//tr")
+        found = False
+
+        for row in rows:
+            name_cell = row.find_element(By.XPATH, "./td[2]")
+            cell_text = name_cell.text.lower().strip()
+
+            if coursename in cell_text:
+                found = True
+                try:
+                   
+                    progress_button = row.find_element(
+                        By.XPATH, ".//a[contains(text(), 'Progress') or contains(@href, 'progress')]"
+                    )
+                    progress_button.click()
+                except Exception:
+                
+                    driver.execute_script("arguments[0].click();", progress_button)
+
+                driver.switch_to.parent_frame
+                return True
+
+        if not found:
+            print(f"No progress button found for course: {coursename}")
+            driver.switch_to.parent_frame
+            return False
+
+    except Exception as e:
+        driver.switch_to.parent_frame
+        print(f"Error in click_progress('{coursename}'): {e}")
+        raise  
+
+def switchframetomodpop1():
+
+    driver.switch_to.default_content()
+    iframepagewin = driver.find_element(By.ID, "pagewin")
+    driver.switch_to.frame(iframepagewin)
+    iframeoverpage = driver.find_element(By.ID, "overpage")
+    driver.switch_to.frame(iframeoverpage)
+    iframemodpop1 = driver.find_element(By.ID, "modpop1")
+    driver.switch_to.frame(iframemodpop1)
+
+def get_current_action_for_course(coursename, max_retries=3, delay=1):
+    for attempt in range(max_retries):
+        try:
+        
+            switchframetomodpop1()
+
+        
+           
+            table = find_element(By.XPATH, "//table[@id='listtable']", frame_func=switchframetomodpop1)
+            if not table:
+                print(f"[{coursename}] Table not found (attempt {attempt+1}), retrying...")
+                time.sleep(delay)
+                continue
+            
+            try:
+                rows = get_rows_from_table(table)
+            except StaleElementReferenceException:
+                print(f"[{coursename}] Table body went stale (attempt {attempt+1}), retrying...")
+                time.sleep(delay)
+                continue
+
+            for row in rows:
+                try:
+                
+                    course_cell = row.find_element(By.XPATH, "./td[2]") 
+                    course_text = course_cell.text.strip() 
+
+                    if coursename.strip() in course_text:
+                        
+                        action_cell = row.find_element(By.XPATH, "./td[5]/a")
+                        action_text = driver.execute_script(
+                            "return arguments[0].textContent;", action_cell
+                        ).strip()
+                        return action_text
+                
+                except StaleElementReferenceException:
+                    
+                    print(f"[{coursename}] Row went stale during scan (attempt {attempt+1}/{max_retries}), retrying...")
+                    break
+
+            print(f"[{coursename}] No matching course found in table.")
+            return None
+
+        except (TimeoutException, StaleElementReferenceException) as e:
+            print(f"[{coursename}] Attempt {attempt+1}/{max_retries} failed due to {type(e).__name__}, retrying...")
+            time.sleep(delay)
+            continue
+
+        except Exception as e:
+            print(f"[{coursename}] Unexpected error in get_current_action_for_course: {e}")
+            time.sleep(delay)
+            continue
+        
+    print(f"[{coursename}] Failed to retrieve current action after {max_retries} retries.")
+    return None
+    
+#-----------------------------------------------------------------PROCESS FUNCTION DICTIONARY--------------------------------------------------
+
+
+
+
+def searchnames (searchfirstname, searchlastname, searchdob):
+    
+    driver.switch_to.default_content()
+
+    click_element((By.XPATH, "/html/body/div/div[4]/input[1]"))
+
+    click_element((By.XPATH, "/html/body/div/div[6]/div/div[11]"))
+
+    print(f"Searching for {searchfirstname} {searchlastname} {searchdob}...")
+    
+    driver.switch_to.default_content()
+    iframepagewin = driver.find_element(By.ID, "pagewin")
+    driver.switch_to.frame(iframepagewin)
+
+    dropdown = Select(driver.find_element(By.ID, "yearsel"))
+    
+    click_element(driver.find_element(By.ID, "yearsel"))
+
+    dropdown.select_by_visible_text("2026/2027")
+
+    inputboxforename = driver.find_element(By.ID, "Forename").clear()
+    inputboxsurname = driver.find_element(By.ID, "Surname").clear()
+    inputboxdob = driver.find_element(By.ID, "DoB").clear()
+
+
+    inputboxforename = driver.find_element(By.ID, "Forename")
+    inputboxsurname = driver.find_element(By.ID, "Surname")
+    inputboxdob = driver.find_element(By.ID, "DoB")
+
+    inputboxforename.send_keys(searchfirstname)
+    inputboxsurname.send_keys(searchlastname)
+    inputboxdob.send_keys(searchdob)
+    
+    click_element((By.ID, "sub1"))
+    
+def checkname(checklastname, checkfirstname):
+    try:
+        print("Looking for dupes in 'Check'...")
+    
+        checkname = str(checklastname) + " " + str(checkfirstname)
+        rowposit = 1
+        match_count = 0 
+        twofound = False
+        total_rows = 0
+    
+        time.sleep(2)
+                
+        rows = driver.find_elements(By.XPATH, '//table[@id="LSlisttable"]/tbody/tr')
+    
+        total_rows = len(rows)
+        print(f'number of entries = {total_rows}')
+
+        if total_rows == 0:
+            print("No results found.")
+            return True
+
+        while rowposit <= total_rows:
+            try:
+                    
+                activerow = driver.find_element(By.ID, "LSrow"+ str(rowposit) ).text
+            
+                if checkname in activerow: 
+                    match_count +=1
+                    print (f"Found entry in row {rowposit}")
+                    
+                    if match_count == 2:
+                        print("Duplicate found!")
+                        return True
+                    
+                else:
+                    print(f"Match not found in row {rowposit}. Moving to next row.")
+                
+                rowposit += 1
+            
+            except Exception as e:
+                print (f"Error checking row {rowposit}:")
+                return True
+            
+
+    except TimeoutException:
+        print("Table not found on the page.")
+        return True
+
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return True
+               
+def listname(clickfirstname, clicklastname):
+
+    print("Looking for dupes in 'list'...")
+    
+    click_element((By.ID, "Submit1"))
+
+    checkname = str(clicklastname) + " " + str(clickfirstname)
+    rowposit = 1
+    match_count = 0 
+    total_rows = 0
+    twofound = False
+
+
+    wait = WebDriverWait(driver, 10)
+    time.sleep (1)
+    rows = wait.until(EC.presence_of_all_elements_located((By.XPATH, '//table[@id="LSlisttable"]/tbody/tr')))
+    total_rows = len(rows)
+    print(f'number of entries = {total_rows}')
+   
+    while rowposit <= total_rows:
+        try:
+                
+            activerow = driver.find_element(By.ID, "LSrow"+ str(rowposit) ).text
+            StuID = activerow[0:9] #its a little unstable around here
+            print (f"Checking StuID = {StuID}")#log
+
+            if checkname in activerow: 
+                match_count +=1
+                print (f"Found entry in row {rowposit}")
+                
+                if match_count == 2:
+                    twofound = True
+                    print("Duplicate found!")
+                    return twofound 
+                
+            else:
+                print(f"Match not found in row {rowposit}. Moving to next row.")
+            
+            rowposit += 1
+        
+        except Exception as e:
+            print (f"Error checking row {rowposit}:")
+            break
+    
+    
+    click_element((By.ID, "select1" ))    
+
+def retrievebio():
+    
+
+
+    iframeoverpage = driver.find_element(By.ID, "overpage")
+    driver.switch_to.frame(iframeoverpage)
+
+    #list of learner data and their respective variable names.
+    time.sleep(2)
+    #BIOGRAPHICAL data locations
+
+    Firstname = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[2]/div[1]"))
+
+    Lastname = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[4]/div[1]"))
+    
+    exclusion = get_element_text((By.XPATH, "/html/body/div[1]"))
+    
+    exclusionstatus = "Excluded" in exclusion.lower()
+    
+
+    Homeaddress1 = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[9]/div[1]"))
+    Homeaddress2 = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[10]/div[1]"))
+    Homeaddress3 = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[11]/div[1]"))
+    Towncity = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[12]/div[1]"))
+    Country = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[14]/div[1]"))
+    Postcode = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[8]/div[1]/a"))
+
+    Hometel = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[16]/div[1]"))
+    Mobiletel = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[17]/div[1]/a"))
+    Personalemail = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[19]/div[1]/a"))
+
+    DoB = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[23]/div[1]"))
+    AgeinAUG = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[25]/div[1]"))
+    
+    click_element((By.XPATH, "/html/body/div[2]/div[16]/input"))
+    click_element((By.XPATH, "/html/body/div[2]/div[12]/input[4]"))
+
+    CODbox = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div[13]/div/input")
+    if not CODbox.get_attribute("value").strip():
+        CODbox.send_keys("xf")
+
+
+    click_element((By.XPATH, "/html/body/div[2]/div[12]/input[4]"))
+    
+    driver.switch_to.parent_frame()
+
+    click_element((By.ID, "select1" ))
+
+    iframeoverpage = driver.find_element(By.ID, "overpage")
+    driver.switch_to.frame(iframeoverpage)
+    
+    click_element((By.XPATH, "/html/body/div[2]/div[16]/input"))
+    click_element((By.XPATH, "/html/body/div[2]/div[2]/div[12]/a"))
+                  
+    iframevisa = driver.find_element(By.ID, "pVisa")
+    driver.switch_to.frame(iframevisa)
+    
+    visa = driver.find_element(By.XPATH, "/html/body/div[1]/div[2]/div[1]/div[1]").text
+    if visa == False:
+        visa = " "
+    else:
+        pass
+
+    driver.switch_to.parent_frame()
+
+    click_element((By.XPATH, "/html/body/div[2]/div[20]/input"))
+    
+    time.sleep(2)
+    course_table = driver.find_element(By.XPATH, "//table[@id='PROVlisttable']")
+    course_rows = course_table.find_elements(By.XPATH, "./tbody/tr")  
+    
+    courses = []
+
+    for row in course_rows:
+        try:
+            # Assuming columns: Course Code in column 1, Course Name in column 2 (adjust as needed)
+            course_code = row.find_element(By.XPATH, "./td[1]").text
+            course_name = row.find_element(By.XPATH, "./td[4]").text
+
+            courses.append({
+                'course_code': course_code,
+                'course_name': course_name
+            })
+        except Exception as e:
+            print(f"Error extracting course data: {e}")
+
+    try:
+        ageinaugint = int(AgeinAUG.strip()) 
+    except ValueError:
+        print("Error: AgeInAug data is invalid!")
+        ageinaugint = -1 
+
+    return {
+        'firstname' : Firstname,
+        'lastname' : Lastname,
+        'Homeaddress 1': Homeaddress1,
+        'Homeaddress 2' : Homeaddress2,
+        'Homeaddress 3' : Homeaddress3,
+        'towncity' : Towncity,
+        'country' : Country,
+        'postcode' : Postcode,
+        'hometel' : Hometel,
+        'mobiletel' : Mobiletel,
+        'personalemail' : Personalemail,
+        'dob' : DoB,
+        'AgeInAug' : ageinaugint,
+        'visa' : visa,
+        'courses' : courses,
+        'exclusion' : exclusionstatus
+     }
+    
+def ensure_all_courses_added(biodata):
+    courses = biodata.get("courses", [])
+    for i, course in enumerate(courses, start=1):
+        coursename = course['course_name']
+        if course_in_modpop1(coursename):
+            print(f"Course '{coursename}' already added → skipping")
+            continue
+
+        print(f"Adding course '{coursename}'")
+        try:
+            
+            choosecourse({"courses": [course]}, course_index=i)
+            
+        except Exception as e:
+            print(f"Failed to add course '{coursename}': {e}")
+            continue
+
+def choosecourse(biodata, course_index=1): 
+    
+    course_info = biodata['courses'][0]
+    coursename = course_info['course_name'] 
+    print(f"Processing course: {coursename}")
+
+    try:
+    
+        if course_index == 1:
+            click_element((By.XPATH, "/html/body/div[1]/div[2]/table/tbody/tr/td[5]/a")) #actiontext
+
+            iframeModpopup = driver.find_element(By.CLASS_NAME, "mcsspopupframe")
+            driver.switch_to.frame(iframeModpopup)
+
+            dropdown =  WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.ID, "1_Provision_Title")))
+            click_element(dropdown)
+
+            select = Select(dropdown)
+            options = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "option")))
+            print(f"Found {len(options)} options in the dropdown.")
+            
+            for option in options:
+                               
+                option_title = option.get_attribute('title')
+
+                if coursename in option_title:
+                        
+                    select.select_by_visible_text(coursename)
+                    print(f"Selected course: {option_title}")
+
+                    click_element((By.ID, "Submit1"))
+                    driver.switch_to.parent_frame()        
+                  
+                    break 
+        
+        else:
+            
+            switchframetomodpop1()
+            click_element((By.XPATH, "/html/body/div[2]/input[2]"))       
+            iframestartnewprocess = driver.find_element(By.XPATH, "/html/body/iframe[2]")
+            driver.switch_to.frame(iframestartnewprocess)
+            
+
+            dropdown =  WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, "/html/body/div/div[1]/select")))
+            click_element(dropdown)
+            select = Select(dropdown)
+            options = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "option")))
+            for option in options:
+                               
+                option_title = option.get_attribute('title')
+
+                if coursename in option_title:
+                        
+                    select.select_by_visible_text(coursename)
+                    print(f"Selected course: {option_title}")
+
+                    click_element((By.XPATH, "/html/body/div/div[6]/input[1]")) 
+                    driver.switch_to.parent_frame()         
+                  
+                    break  
+
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        driver.switch_to.parent_frame()
+        return False
+
+def checkprocess(biodata):
+
+    course_info = biodata['courses'][0]
+    coursename = course_info['course_name'] 
+
+        
+    table = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.XPATH, "//table[@id='listtable']/tbody"))
+    )
+    switchframetomodpop1()
+    rows = table.find_elements(By.XPATH, "./tr")
+
+ 
+    for row in rows:
+        try:
+        
+            course_cell = row.find_element(By.XPATH, "./td[2]")
+            course_text = course_cell.text
+
+            if coursename in course_text: #looking at one to high
+
+                action_cell = row.find_element(By.XPATH, "./td[5]/a")
+                actionstep = driver.execute_script("return arguments[0].textContent;", action_cell).strip()
+                print(f"Found action step for '{coursename}': {actionstep}")
+                return actionstep
+        except Exception:
+            continue
+
+    print(f"No matching course found for: {coursename}")
+    return False
+
+def course_in_modpop1(coursename):
+   
+    try:
+        driver.switch_to.default_content()
+        switchframetomodpop1()
+
+        table = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.ID, "listtable"))
+        )
+        rows = table.find_elements(By.XPATH, ".//tr")
+        for row in rows:
+            try:
+                cell_text = row.find_element(By.XPATH, "./td[2]").text.lower().strip()
+                if coursename.lower().strip() in cell_text:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        return False
+    return False
+
+def applicanttype(biodata, course):
+
+
+    coursename = str(course['course_name']).strip()
+    coursecode = course['course_code']
+
+    blocked_terms = ["Rugby", "Counselling", "Horticulture", "Tier", "(Online)", "Level 4", "RHS"]
+    print ("Checking if course is blocked")
+    if any(term in coursename for term in blocked_terms):
+        return False
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+    print ("FE-Process selected")
+
+    driver.switch_to.parent_frame()
+
+    return {'status': True, 'blocked_course': None}
+
+def exclusioncheck(biodata, course):
+    
+    coursename = str(course['course_name']).strip()
+    coursecode = course['course_code']
+
+    switchframetomodpop1()
+
+    exclusionstatus = biodata['exclusion']
+    
+    if exclusionstatus == True:
+        return False
+    else:
+        click_progress(coursename)
+    
+        iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]")))
+        driver.switch_to.frame(iframenextstep)
+
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+
+        driver.switch_to.parent_frame()
+        return True
+
+def currentstudentcheck(biodata, course):
+
+    coursename = str(course['course_name']).strip()
+
+
+    switchframetomodpop1()
+    
+    click_progress(coursename)
+    
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]")))
+    driver.switch_to.frame(iframenextstep)
+
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+    print("Applicant is not current student")
+
+    driver.switch_to.parent_frame()
+
+def applicantrts(biodata, course): 
+
+    coursename = course['course_name'].lower().strip()
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+    
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+
+    visa = biodata.get('visa', '')
+    
+    if "Student" in visa:
+        
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+
+        print ("applicant does NOT have provisional RTS")
+        switchframetomodpop1()
+        return False
+
+    else:
+        
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")   
+
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+        switchframetomodpop1()
+
+
+        return True
+
+def missinginfo(biodata, course): # looping missing entry? is the fail 
+
+    coursename = str(course['course_name']).strip()
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+    
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+    
+    issues = []
+
+    if not biodata.get('firstname') or not biodata.get('lastname'):
+        issues.append("Missing full name (firstname and/or lastname).")
+
+    if not (biodata.get('Homeaddress 1') or biodata.get('Homeaddress 2') or biodata.get('Homeaddress 3')):
+        issues.append("Missing home address (at least one line of the address).")
+
+    if not biodata.get('postcode'):
+        issues.append("Missing postcode.")
+
+    if not biodata.get('towncity'):
+        issues.append("Missing town/city.")
+
+    if not (biodata.get('hometel') or biodata.get('mobiletel')):
+        issues.append("Missing contact telephone number (either home or mobile).")
+
+    if not biodata.get('personalemail'):
+        issues.append("Missing personal email.")
+
+    if not biodata.get('dob'):
+        issues.append("Missing date of birth (DoB).")
+
+    if not issues:
+        
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+
+        driver.switch_to.parent_frame()
+        return "All required information is present."
+    else: 
+
+        print(f"There is missing information: {issues}")
+        
+        return False 
+    
+def agesuitable(biodata, course):
+    switchframetomodpop1()
+
+    agesuitability = 'Age requirements.xlsx'
+    df = pd.read_excel(agesuitability, usecols="C, E")
+    df["Course code"] = df["Course code"].str.strip()
+    df_indexed = df.set_index("Course code") 
+
+    coursename = str(course['course_name']).strip()
+    coursecode = re.sub(r'\s+$', '', str(course['course_code']))
+
+    age_requirement = df_indexed['Age suitable'].get(coursecode) 
+    if age_requirement is None or pd.isna(age_requirement):
+        print(f"Course code '{coursecode}' not found in the dataset.")
+        return False
+
+    age_requirement = str(age_requirement).strip()
+
+    click_progress(coursename)
+
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+
+    studentage = biodata.get('AgeInAug', -1)
+    if studentage in (-1, None):
+        print("Invalid or missing student age.")
+        return False
+    
+    if age_requirement == "19+": 
+        if studentage >= 19:
+            
+            select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")
+
+            click_element((By.ID, "subm1" ))
+            click_element((By.ID, "subm1" ))
+
+            print("19+ - age suitable")
+            return True
+        else:
+            print(f"The applicant does not meet the age requirement (19+) for course {coursecode}.")
+            select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N")    
+
+            click_element((By.ID, "subm1" ))
+            click_element((By.ID, "subm1" ))
+
+            
+            return False 
+        
+    elif age_requirement == "16-18":
+        if 16 <= studentage <= 18:
+            
+            select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")
+
+            click_element((By.ID, "subm1" ))
+            click_element((By.ID, "subm1" ))
+            print("16-18+ - age suitable")
+            return True 
+        else:
+            print(f"The applicant does not meet the age requirement (16-18) for course {coursecode}.")
+            select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N")
+
+            click_element((By.ID, "subm1" ))
+            click_element((By.ID, "subm1" ))
+            
+            return False  
+    
+def ageselect(biodata, course): 
+    
+    coursename = str(course['course_name']).strip()
+    coursecode = course['course_code']
+
+    switchframetomodpop1()
+    click_progress(coursename)
+   
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+   
+    age = biodata.get('AgeInAug')
+    if age >= 19:
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "19+")  
+
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+        driver.switch_to.parent_frame()
+
+        print ("19+ selected")
+       
+    
+    else:
+
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+        driver.switch_to.parent_frame()
+        print ("16-18 Selected")
+               
+def sendcomms(biodata, course):
+
+    coursename = str(course['course_name']).strip()
+    coursecode = course['course_code']
+    switchframetomodpop1()
+
+    click_progress(coursename)
+   
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+    
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" )) 
+    print("Comms Sent")
+    driver.switch_to.parent_frame()
+
+def parentconsent(biodata, course):
+
+    coursename = course['course_name'].lower().strip()
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+   
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")  
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+    print("Parental consent = yes")
+
+    driver.switch_to.parent_frame()
+    
+def parentcommssend(biodata, course):
+    
+    coursename = str(course['course_name']).strip()
+
+    switchframetomodpop1()
+
+    time.sleep(0.5)
+    click_progress(coursename)
+   
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
+    driver.switch_to.frame(iframenextstep)
+    
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" )) 
+    print("Parent Comms Sent")
+    driver.switch_to.parent_frame()
+
+def actionmap_router(biodata):
+    """Dynamically routes to the correct function based on the action text in the DOM.Assumes the course is already added and modpop1 is open."""
+    courses = biodata.get("courses", [])
+    if not courses:
+        print("No courses found for this learner.")
+        return False
+    
+    all_success = True
+
+    for course in courses:
+        coursename = course['course_name']
+        
+      
+        print(f"\n--- Processing course: {coursename} ---")
+        
+      
+        while True:
+          
+            action_text = get_current_action_for_course(coursename)
+            if not action_text:
+                print(f"No more actions found for course '{coursename}'")
+                break
+
+            print(f"Current action: {action_text}")
+
+            ACTION_MAP = {
+                "Applicant type?": applicanttype,
+                "Has the student been excluded previously?": exclusioncheck,
+                "Is applicant a current student?": currentstudentcheck,
+                "Does applicant have provision RTS?": applicantrts,
+                "Missing information on their application?": missinginfo,
+                "Age suitable for course?": agesuitable,
+                "16-18 or 19+?": ageselect,
+                "Send acknowledgement comms": sendcomms,
+                "Consent given to send to parent?": parentconsent,
+                "Send parent acknowledgement comms": parentcommssend
+                }
+
+            func = ACTION_MAP.get(action_text)
+            if not func:
+    
+                if action_text == "Applied to 3 or more courses?":
+                    print(f"Reached checkpoint for '{coursename}'.")
+                    print(f"All actions completed up to acknowledgement stage.")
+                    break  
+
+    
+                print(f"Warning: No function mapped for action '{action_text}'. Skipping.")
+                all_success = False
+                break
+
+
+            result = func(biodata, course)
+        
+            if result is False:
+                print(f"Action '{action_text}' failed for course '{coursename}'")
+                all_success = False
+                break  
+            else:
+                print(f"Action '{action_text}' completed successfully")
+            
+            if action_text == "Send parent acknowledgement comms":
+                print(f"All actions completed for course '{coursename}'")
+                break
+  
+    return all_success
+
+
+def processlearner(firstname, lastname, dob): #TODO instead of carrying on in sequence, read whats written in action and call function based on that? 
+    
+    #1. Learner Lookup 
+    print(f"Processing learner: {firstname} {lastname} {dob}")
+    searchnames(firstname, lastname, dob)
+    
+    #2. Check 'Check' for duplicates
+    dupecheck1 = checkname(lastname, firstname)
+    if dupecheck1 == True:
+        print("Duplicate found in 'Check'. //HUMAN// Please process manually")
+        
+        return False
+    else:
+         print(f"No duplicates found for {firstname} {lastname}. Proceeding...\n")
+        
+
+    #3. Check 'list' for duplicates
+    dupecheck2 = listname(firstname, lastname)
+    if dupecheck2 == True:
+        print("Duplicate found in 'list'. //HUMAN// Please process manually")
+        return  False
+    else:
+         print(f"No duplicates found for {firstname} {lastname}. Proceeding...\n")
+
+
+    #4. Retrieve bio data
+    bio = retrievebio()
+
+    courses = bio.get("courses", [])
+    if not courses:
+        print("No courses found for this learner.")
+        return False
+    
+    click_element((By.ID, "Button1"))
+
+    switchframetomodpop1()
+    
+
+    #first add all the courses
+    ensure_all_courses_added(bio)
+    
+     
+    #then iterate through courses, processing based on action map
+    success = actionmap_router(bio)
+    if not success:
+        return False
+    else:
+        return True
+
+  
+    
+    
+    
+    
+    
+
+
+
+
+
+#--------------------------------------------------------CONTROLLER--------------------------------------------------------
+
+
+#TODO step selection - input number in order to jump to process from/only that section?  **seems action can be read from table - mabye can use if sequence to option select functions?
+#TODO need to integrate multiple application functionality - mabye row counter and +1 to row when name appears again in pd-df2?
+
+
+
+print("> Safemode? (Y/N) ")
+Headlessinput = input().upper()
+
+edge_options = Options()
+if Headlessinput == 'N':
+    edge_options.add_argument("--headless")
+    edge_options.add_argument("--window-size=1920x1080")  
+    print("Running in Normal mode...")
+else:
+    print("Running in Safemode...")
+
+
+driver = webdriver.Edge(options=edge_options)
+
+driver.get('https://eds.activatelearning.ac.uk/portal/html/HOM/portalhome.htm#LNR_learnerstart')
+driver.refresh()
+WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, "/html/body/div/div[4]/input[1]"))).click()
+WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, "/html/body/div/div[6]/div/div[11]"))).click()
+
+print("> Manual override? (Y/N) ")
+manual_override = input().upper()
+
+
+if manual_override == 'Y':
+    
+    print("Enter the details for the learner you want to process.")
+    searchfirstname = input("Enter First Name: ")
+    searchlastname = input("Enter Last Name: ")
+    searchdob = input("Enter Date of Birth (DD/MM/YYYY): ")
+    
+    print("")
+    print(f"--------[MANUAL] Processing: {searchfirstname} {searchlastname} {searchdob}--------")
+    print("")
+    
+
+    processedchek = processlearner(searchfirstname, searchlastname, searchdob,)
+
+    if processedchek == True:
+
+        print(f"Processed {searchfirstname} {searchlastname} for successfully.\n")
+             
+        
+    else:
+        print(f"Issue found with {searchfirstname} {searchlastname}, Human Intervention required.\n")
+
+    
+   
+    driver.quit()
+
+
+else:
+
+
+
+    Applicationlist = 'New Applications.xlsx'
+    df2 = pd.read_excel(Applicationlist, usecols="C, E, G, N")
+
+    wb = load_workbook(Applicationlist)
+    ws = wb.active
+
+    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # success
+    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # manual review
+
+    entries = int(df2.shape[0])
+    print(f"Total Applications = {entries}")
+
+    loopcounter = 0
+    while loopcounter < entries:
+        try: 
+            dffirstname = df2.iloc[loopcounter]['Forename']
+            dflastname = df2.iloc[loopcounter]['Surname']
+            dfdob = df2.iloc[loopcounter]['DoB']
+            tempdob = datetime.strptime(str(dfdob), "%Y-%m-%d %H:%M:%S")
+            stripdob = tempdob.strftime("%d/%m/%Y")
+
+            print(f"--------[BULK] Processing: {dffirstname} {dflastname} {stripdob}--------")
+            
+            processedchek = processlearner(dffirstname, dflastname, stripdob)
+
+            excel_row = loopcounter + 2 
+
+            if processedchek == True:
+
+                print(f"Processed {dffirstname} {dflastname} successfully.\n")
+                for cell in ws[excel_row]:
+                    cell.fill = green_fill
+                    wb.save(Applicationlist)
+                continue
+            
+            else:
+                print(f"Issue found with {dffirstname} {dflastname} Human Intervention required.\n")
+                for cell in ws[excel_row]:
+                    cell.fill = yellow_fill 
+                    wb.save(Applicationlist)            
+                continue
+        
+        except Exception as e:
+            print(f"Error processing {dffirstname} {dflastname}: {e}")
+            for cell in ws[excel_row]:
+                cell.fill = yellow_fill 
+        finally:
+            wb.save(Applicationlist) 
+            loopcounter += 1  
+
+    print("All learners processed.")
+    wb.save(Applicationlist)
+    wb.close()
+    print("Workbook saved with updates.")
+    driver.quit()
+
+
+            
+
+
+    
+    
+   
+
+
+
+
+
