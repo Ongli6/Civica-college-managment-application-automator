@@ -1,4 +1,4 @@
-# Application Automator - // - 09/01/2025 - Project was canned by Compliance - //
+# Application Automator - // - 23/10/2025 - WE ARE SO BACK - //
 
 
 Application helper - scrapes data from Student BIO and completes application flowchart based on it. We complete hundreds of applications a day by hand - in theory automating the process would save us at least 2 hrs a day *EACH*. 
@@ -20,6 +20,7 @@ Two source Excel files are required for the program to function:
 
 - Retry on stale wrapper + stale click + stale dropedowns: pretty neat little thing that increases process success rate, selenium can be a little fickle therefore having the extra buffer before the whole thing crashes out is great.
 - Get_element_text(locator) function - slight adjustment to seleniums default get element text command which helps reduce crash due to white space syntax errors.
+- action router - really cool little function that reads what step the application is on and then runs the associated function.
 
 
 
