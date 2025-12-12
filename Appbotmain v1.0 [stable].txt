@@ -1,12 +1,3 @@
-#---------------------------------------------------------------------OMBOT--------------------------------------------------
-
-
-#things to do:
-
-#       Finish FE process Function dictionary
-#       Keep an eye on the stale retries - i believe iframes issues may cause crashes.
-#       Really need to create safe crashing.
-#       missing info, seems to break click when theres stuff jmissing
 from selenium import webdriver 
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
@@ -23,7 +14,8 @@ import pandas as pd
 import time
 import re
 
-
+#TODO subfunction out submit submit at end of every function 
+#TODO Subfunction out clicking progress + frame
 
 #-----------------------------------------------------------------HELPER FUNCTION DICTIONARY--------------------------------------------------
 
@@ -70,7 +62,6 @@ def find_element(by, locator, timeout=20, retries=3, delay=1, frame_func=None):
     print(f"safe_find_element: failed to locate {locator} after {retries} retries")
     return None
 
-@retry_on_stale(max_retries=3)
 def click_element(locator, max_retries=3):
     for attempt in range(max_retries):
         try:
@@ -126,24 +117,32 @@ def click_progress(coursename):
                 found = True
                 try:
                    
-                    progress_button = row.find_element(
-                        By.XPATH, ".//a[contains(text(), 'Progress') or contains(@href, 'progress')]"
-                    )
-                    progress_button.click()
+                    progress_button = WebDriverWait(row, 5).until(EC.element_to_be_clickable((By.XPATH, ".//a[contains(text(), 'Progress') or contains(@href, 'progress')]")))
+                    href_js = progress_button.get_attribute("href")
+                
+                    if href_js:
+                        js_call = href_js.replace("javascript:", "").strip()
+                        driver.execute_script(js_call)
+                    else:
+                        print("No href found on Progress button.")
+
+                except Exception as e:
+                    print(f"Error clicking progress button: {e}")
+
                 except Exception:
                 
                     driver.execute_script("arguments[0].click();", progress_button)
 
-                driver.switch_to.parent_frame
+                driver.switch_to.parent_frame()
                 return True
 
         if not found:
             print(f"No progress button found for course: {coursename}")
-            driver.switch_to.parent_frame
+            driver.switch_to.parent_frame()
             return False
 
     except Exception as e:
-        driver.switch_to.parent_frame
+        driver.switch_to.parent_frame()
         print(f"Error in click_progress('{coursename}'): {e}")
         raise  
 
@@ -212,7 +211,70 @@ def get_current_action_for_course(coursename, max_retries=3, delay=1):
         
     print(f"[{coursename}] Failed to retrieve current action after {max_retries} retries.")
     return None
+
+def getcampus(course_codes):
+   
+    try:
+        
+        
+        if isinstance(course_codes, list) and course_codes:
+            course_code = course_codes[0]['course_code']
+        else:
+            print("⚠ No course codes found — cannot set campus.")
+            return None
+        
     
+        prefcampus = driver.find_element(By.ID, "1_Campus_applied_to")
+        select = Select(prefcampus)
+
+            # Get currently selected option text or value
+        current_value = select.first_selected_option.get_attribute("value").strip()
+        current_text = select.first_selected_option.text.strip()
+
+            # Check if it's unselected or still says "Select campus"
+        if not current_value or current_value.lower() in ["title", "select campus", "select"]:
+            print("Campus dropdown is blank, setting based on course code...")
+            
+            campus = None
+                
+            if course_code.endswith("R"):
+                campus = "Reading"
+            elif course_code.startswith("FC"):
+                campus = "Farnham College"
+            elif course_code.startswith("BY"):
+                campus = "Banbury"
+            elif "/" in course_code and re.match(r"^[A-Z]{2}/", course_code):
+                campus = "Bracknell & Wokingham"
+            elif re.match(r"^O(?!X)", course_code):  # starts with O but not OX
+                campus = "Guildford College"
+            else:
+                campus = "Oxford"
+
+            try:
+                select.select_by_visible_text(campus)
+                print(f"Campus set to '{campus}' for course {course_code}")
+            except Exception:
+                try:
+                    select.select_by_value(campus)
+                    print(f"Campus set by value '{campus}' for course {course_code}")
+                except Exception:
+                    print(f"⚠ Could not find campus option '{campus}' for {course_code}")
+
+        else:
+            print(f"Campus already set to: {current_text}")
+    except Exception as e:
+        print(f"Error setting campus for {course_code}: {e}")
+
+@retry_on_stale(max_retries=3)
+def switchframetomodal():
+
+    driver.switch_to.default_content() 
+    switchframetomodpop1()              
+    
+    iframenextstep = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class,'mcsspopupframe') and not(@id='modpop1')]")))
+    driver.switch_to.frame(iframenextstep)
+    
+
 #-----------------------------------------------------------------PROCESS FUNCTION DICTIONARY--------------------------------------------------
 
 
@@ -353,16 +415,14 @@ def listname(clickfirstname, clicklastname):
     click_element((By.ID, "select1" ))    
 
 def retrievebio():
-    
-
 
     iframeoverpage = driver.find_element(By.ID, "overpage")
     driver.switch_to.frame(iframeoverpage)
 
-    #list of learner data and their respective variable names.
+   
     time.sleep(2)
-    #BIOGRAPHICAL data locations
 
+    #biodata retrieval
     Firstname = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[2]/div[1]"))
 
     Lastname = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[4]/div[1]"))
@@ -386,38 +446,32 @@ def retrievebio():
     DoB = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[23]/div[1]"))
     AgeinAUG = get_element_text((By.XPATH, "/html/body/div[2]/div[1]/div[25]/div[1]"))
     
-    click_element((By.XPATH, "/html/body/div[2]/div[16]/input"))
-    click_element((By.XPATH, "/html/body/div[2]/div[12]/input[4]"))
+    click_element((By.XPATH, "/html/body/div[2]/div[16]/input")) #additional tab
+    click_element((By.XPATH, "/html/body/div[2]/div[12]/input[4]")) #edit button
 
     CODbox = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div[13]/div/input")
     if not CODbox.get_attribute("value").strip():
         CODbox.send_keys("xf")
 
-
-    click_element((By.XPATH, "/html/body/div[2]/div[12]/input[4]"))
-    
-    driver.switch_to.parent_frame()
-
-    click_element((By.ID, "select1" ))
-
-    iframeoverpage = driver.find_element(By.ID, "overpage")
-    driver.switch_to.frame(iframeoverpage)
-    
-    click_element((By.XPATH, "/html/body/div[2]/div[16]/input"))
-    click_element((By.XPATH, "/html/body/div[2]/div[2]/div[12]/a"))
+    click_element((By.XPATH, "/html/body/div[2]/div[2]/div[24]/a")) #visa
                   
     iframevisa = driver.find_element(By.ID, "pVisa")
     driver.switch_to.frame(iframevisa)
     
-    visa = driver.find_element(By.XPATH, "/html/body/div[1]/div[2]/div[1]/div[1]").text
+    visa = driver.find_element(By.XPATH, "/html/body/div[1]/div[2]/div/input").text
     if visa == False:
         visa = " "
     else:
         pass
+    
+   
+    click_element((By.XPATH, "/html/body/div[2]/input[1]")) #close the visa, 
 
     driver.switch_to.parent_frame()
 
-    click_element((By.XPATH, "/html/body/div[2]/div[20]/input"))
+
+    #course retrieval
+    click_element((By.XPATH, "/html/body/div[2]/div[20]/input")) #applied to
     
     time.sleep(2)
     course_table = driver.find_element(By.XPATH, "//table[@id='PROVlisttable']")
@@ -427,7 +481,7 @@ def retrievebio():
 
     for row in course_rows:
         try:
-            # Assuming columns: Course Code in column 1, Course Name in column 2 (adjust as needed)
+            
             course_code = row.find_element(By.XPATH, "./td[1]").text
             course_name = row.find_element(By.XPATH, "./td[4]").text
 
@@ -444,6 +498,50 @@ def retrievebio():
         print("Error: AgeInAug data is invalid!")
         ageinaugint = -1 
 
+
+    #Data filling
+    click_element((By.XPATH, "/html/body/div[2]/div[16]/input")) # Additional
+    
+    getcampus(courses)
+    
+
+
+    click_element((By.XPATH, "/html/body/div[2]/div[12]/input[4]")) 
+    
+    
+    driver.switch_to.parent_frame()
+
+    click_element((By.ID, "select1" ))
+
+    iframeoverpage = driver.find_element(By.ID, "overpage")
+    driver.switch_to.frame(iframeoverpage)
+   
+   
+    #ASN EHCP RETRIVAL
+    click_element((By.XPATH, "/html/body/div[2]/div[18]/input")) #health
+
+    indicator = get_element_text((By.XPATH, "/html/body/div[2]/div[4]/div[1]/div/div"))
+    
+    if indicator == "Not considered as having a learning difficulty and/or disability and/or health problem" or indicator == "":
+        asn = False
+
+    elif indicator == "Self-assessed as having learning difficulty and/or disability and/or health problem":
+        asn = True
+
+    elif indicator == "No information provided by the learner":
+        asn = False
+    
+
+
+    EHCPindicator = get_element_text((By.XPATH, "/html/body/div[2]/div[4]/div[2]/div/div"))
+
+    if EHCPindicator == "Learner has an Education Health Care plan":
+        ehcp = True
+
+    elif EHCPindicator == "":
+        ehcp = False
+
+    
     return {
         'firstname' : Firstname,
         'lastname' : Lastname,
@@ -460,7 +558,9 @@ def retrievebio():
         'AgeInAug' : ageinaugint,
         'visa' : visa,
         'courses' : courses,
-        'exclusion' : exclusionstatus
+        'exclusion' : exclusionstatus,
+        'ASN' : asn,
+        'EHCP' : ehcp
      }
     
 def ensure_all_courses_added(biodata):
@@ -480,7 +580,7 @@ def ensure_all_courses_added(biodata):
             print(f"Failed to add course '{coursename}': {e}")
             continue
 
-def choosecourse(biodata, course_index=1): 
+def choosecourse(biodata, course_index=1): # needs to be ablet o identify withdrawn courses and remove them from the list?
     
     course_info = biodata['courses'][0]
     coursename = course_info['course_name'] 
@@ -491,7 +591,8 @@ def choosecourse(biodata, course_index=1):
         if course_index == 1:
             click_element((By.XPATH, "/html/body/div[1]/div[2]/table/tbody/tr/td[5]/a")) #actiontext
 
-            iframeModpopup = driver.find_element(By.CLASS_NAME, "mcsspopupframe")
+            iframeModpopup = driver.find_element(By.CLASS_NAME, "mcsspopupframe") #TODO investigate
+            
             driver.switch_to.frame(iframeModpopup)
 
             dropdown =  WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.ID, "1_Provision_Title")))
@@ -613,8 +714,8 @@ def applicanttype(biodata, course):
 
     click_progress(coursename)
 
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
+
     click_element((By.ID, "subm1" ))
     click_element((By.ID, "subm1" ))
 
@@ -638,8 +739,7 @@ def exclusioncheck(biodata, course):
     else:
         click_progress(coursename)
     
-        iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]")))
-        driver.switch_to.frame(iframenextstep)
+        switchframetomodal()
 
         click_element((By.ID, "subm1" ))
         click_element((By.ID, "subm1" ))
@@ -651,13 +751,11 @@ def currentstudentcheck(biodata, course):
 
     coursename = str(course['course_name']).strip()
 
-
     switchframetomodpop1()
     
     click_progress(coursename)
     
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]")))
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
 
     click_element((By.ID, "subm1" ))
     click_element((By.ID, "subm1" ))
@@ -674,8 +772,7 @@ def applicantrts(biodata, course):
 
     click_progress(coursename)
     
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
 
     visa = biodata.get('visa', '')
     
@@ -699,7 +796,7 @@ def applicantrts(biodata, course):
 
         return True
 
-def missinginfo(biodata, course): # looping missing entry? is the fail 
+def missinginfo(biodata, course): 
 
     coursename = str(course['course_name']).strip()
 
@@ -707,8 +804,7 @@ def missinginfo(biodata, course): # looping missing entry? is the fail
 
     click_progress(coursename)
     
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
     
     issues = []
 
@@ -766,8 +862,7 @@ def agesuitable(biodata, course):
 
     click_progress(coursename)
 
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
 
     studentage = biodata.get('AgeInAug', -1)
     if studentage in (-1, None):
@@ -820,8 +915,7 @@ def ageselect(biodata, course):
     switchframetomodpop1()
     click_progress(coursename)
    
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
    
     age = biodata.get('AgeInAug')
     if age >= 19:
@@ -849,8 +943,7 @@ def sendcomms(biodata, course):
 
     click_progress(coursename)
    
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
     
     click_element((By.ID, "subm1" ))
     click_element((By.ID, "subm1" )) 
@@ -865,8 +958,7 @@ def parentconsent(biodata, course):
 
     click_progress(coursename)
    
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
     select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")  
     click_element((By.ID, "subm1" ))
     click_element((By.ID, "subm1" ))
@@ -884,22 +976,313 @@ def parentcommssend(biodata, course):
     time.sleep(0.5)
     click_progress(coursename)
    
-    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]"))) 
-    driver.switch_to.frame(iframenextstep)
+    switchframetomodal()
     
     click_element((By.ID, "subm1" ))
     click_element((By.ID, "subm1" )) 
     print("Parent Comms Sent")
     driver.switch_to.parent_frame()
 
+def triagechek(biodata, course): #TODO process progression if triage required - send the comms?
+
+    coursename = str(course['course_name']).strip()
+    courselist = biodata.get("courses", [])
+    num_courses = len(courselist)
+
+    print(f"Learner has applied to {num_courses} course(s).")
+
+    time.sleep(0.5)
+    click_progress(coursename)
+
+    switchframetomodal()
+
+    if num_courses >= 3:
+        print("Learner has applied to 3 or more courses - triage required.")
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")  
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+        return False 
+   
+    print("No triage needed")
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N")
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+def triageprocess(biodata, course): #TODO figure out how to know if triage comms already sent
+    print("student has applied for too many courses")
+    coursename = str(course['course_name']).strip()
+    
+
+
+
+def refertocareers(biodata, course):
+    
+    coursename = course['course_name']
+
+    switchframetomodpop1()
+
+    
+    click_progress(coursename)
+    
+    switchframetomodal()
+
+
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N")  
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+    print("Refer to careers = No")
+
+    driver.switch_to.parent_frame()
+
+def transfer(biodata, course):
+    
+    coursename = course['course_name']
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+
+    switchframetomodal()
+
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N")  
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+    print("Transfer required = No")
+
+    driver.switch_to.parent_frame()
+
+def LSchek(biodata, course): 
+
+    coursename = course['course_name']
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+
+    switchframetomodal()
+
+
+    asnvalue = biodata.get("ASN")
+    ehcpvalue = biodata.get("EHCP")
+    if asnvalue or ehcpvalue:
+        reason = "ASN" if asnvalue else "EHCP"
+        print(f"Learner has {reason}")
+
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")
+        click_element((By.ID, "subm1"))
+        click_element((By.ID, "subm1"))
+        driver.switch_to.parent_frame()   
+            
+        #click no cc
+        switchframetomodpop1()
+        click_progress(coursename)
+        switchframetomodal()
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N") 
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+
+        #is student EHCP
+        switchframetomodpop1()
+        click_progress(coursename)
+        switchframetomodal()
+
+        value = "Y" if ehcpvalue else "N"
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), value)
+
+        click_element((By.ID, "subm1"))
+        click_element((By.ID, "subm1"))
+
+        #is student ASN
+        switchframetomodpop1()
+        click_progress(coursename)
+        switchframetomodal()
+
+        value = "Y" if asnvalue else "N"
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), value)
+
+        click_element((By.ID, "subm1"))
+        click_element((By.ID, "subm1"))
+        return False
+        
+    
+    print("Learner has neither ASN nor EHCP")
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N")  
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+    driver.switch_to.parent_frame()  
+
+
+def assesmentchek(biodata, course):
+
+    coursename = course['course_name']
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+
+    switchframetomodal()
+
+    needasses = ["GCSE English", "Access to HE", "GCSE Maths"]
+    print ("Checking if course requires Assesment")
+    if any(term in coursename for term in needasses):
+
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+
+        return False #TODO continue to grades meet criteria
+    
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "N")
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+    driver.switch_to.parent_frame()  
+    
+def phaseselect(biodata, course):
+
+    coursename = course['course_name']
+    age = biodata['AgeInAug']
+    switchframetomodpop1()
+
+    click_progress(coursename)
+
+    switchframetomodal()
+
+    if 16 <= age < 19:
+        
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "1")
+        click_element((By.ID, "subm1" ))
+        click_element((By.ID, "subm1" ))
+        driver.switch_to.parent_frame() #straight to MTT!!
+
+    elif age >= 19: #TODO phase 2 needs exploration
+    
+        select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "2")
+        click_element((By.ID, "subm1"))
+        click_element((By.ID, "subm1"))
+        driver.switch_to.parent_frame() 
+
+    else:
+        print(f"Unexpected age value: {age}")
+        
+        driver.switch_to.parent_frame() 
+        return False
+
+def ageoffer(biodata, course): #always 19+ because 16-18 is MTT
+
+    coursename = course['course_name']
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+   
+    driver.switch_to.default_content()
+    switchframetomodpop1()
+    iframenextstep = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@class, 'mcsspopupframe') and not(@id='modpop1')]")))     
+    driver.switch_to.frame(iframenextstep)
+
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "19+")
+    click_element((By.ID, "subm1"))
+    click_element((By.ID, "subm1"))
+    driver.switch_to.parent_frame() 
+
+
+def sendMTTevent(biodata, course): #currently always yes as step only appears when you need to send
+    
+    coursename = course['course_name']
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+   
+    switchframetomodal()
+
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")  
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+    print("MTT comms sent")
+
+    driver.switch_to.parent_frame()
+  
+def sendMTTcomms(biodata, course):
+
+    coursename = str(course['course_name']).strip()
+    coursecode = course['course_code']
+    switchframetomodpop1()
+
+    click_progress(coursename)
+   
+    switchframetomodal()
+    
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" )) 
+    print("MTT Comms Sent")
+    driver.switch_to.parent_frame()
+
+def parentconsent(biodata, course):
+    coursename = course['course_name']
+
+    switchframetomodpop1()
+
+    click_progress(coursename)
+   
+    switchframetomodal()
+
+    select_dropdown_option((By.XPATH, "/html/body/div[1]/div[2]/div/select"), "Y")  
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" ))
+
+    print("Parent consent = yes")
+
+    driver.switch_to.parent_frame()
+
+def sendMTTparentcomms(biodata, course):
+    coursename = str(course['course_name']).strip()
+    coursecode = course['course_code']
+    switchframetomodpop1()
+
+    click_progress(coursename)
+   
+    switchframetomodal()
+    
+    click_element((By.ID, "subm1" ))
+    click_element((By.ID, "subm1" )) 
+    print("MTT Comms Sent")
+    driver.switch_to.parent_frame()
+
+
+
+
+
+
+
+
+
+
+
+
+#--------------------------------------------------------CONTROLLER--------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
 def actionmap_router(biodata):
-    """Dynamically routes to the correct function based on the action text in the DOM.Assumes the course is already added and modpop1 is open."""
+   
     courses = biodata.get("courses", [])
     if not courses:
         print("No courses found for this learner.")
         return False
     
     all_success = True
+    failed_action = "None"
 
     for course in courses:
         coursename = course['course_name']
@@ -912,7 +1295,9 @@ def actionmap_router(biodata):
           
             action_text = get_current_action_for_course(coursename)
             if not action_text:
-                print(f"No more actions found for course '{coursename}'")
+                print(f"No actions found for course '{coursename}'")
+                all_success = False
+                failed_action = "SYSTEM ERROR"
                 break
 
             print(f"Current action: {action_text}")
@@ -927,40 +1312,51 @@ def actionmap_router(biodata):
                 "16-18 or 19+?": ageselect,
                 "Send acknowledgement comms": sendcomms,
                 "Consent given to send to parent?": parentconsent,
-                "Send parent acknowledgement comms": parentcommssend
-                }
+                "Send parent acknowledgement comms": parentcommssend,
+                "Applied to 3 or more courses?": triagechek,
+                "Does applicant need to be referred to careers?": refertocareers,
+                "Does applicant need to be transferred?": transfer,
+                "Does applicant have CC, EHCP or ASN?": LSchek,
+                "Does applicant require an assessment?": assesmentchek,
+                "Which Phase?": phaseselect,
+                "16-18 or 19+ offer?": ageoffer,
+                "Send MTT event?":sendMTTevent,
+                "Send MTT Comms": sendMTTcomms,
+                "Consent given to send to parent?": parentconsent,
+                "Send MTT Parent comms": sendMTTparentcomms}
 
             func = ACTION_MAP.get(action_text)
             if not func:
     
-                if action_text == "Applied to 3 or more courses?":
+                if action_text == "Did applicant book MTT?": #TODO this is kinda a patch fix
                     print(f"Reached checkpoint for '{coursename}'.")
-                    print(f"All actions completed up to acknowledgement stage.")
+                    print(f"All actions completed.")
                     break  
 
     
                 print(f"Warning: No function mapped for action '{action_text}'. Skipping.")
                 all_success = False
+                failed_action = action_text
                 break
 
 
-            result = func(biodata, course)
+            result = func(biodata, course) #TODO mabye can detect Triage or ASN at this level and have an failure actionmap or something
         
             if result is False:
                 print(f"Action '{action_text}' failed for course '{coursename}'")
                 all_success = False
-                break  
+                failed_action = action_text
+                break
             else:
                 print(f"Action '{action_text}' completed successfully")
             
-            if action_text == "Send parent acknowledgement comms":
+            if action_text == "Did applicant book MTT?": 
                 print(f"All actions completed for course '{coursename}'")
                 break
   
-    return all_success
+    return all_success, failed_action
 
-
-def processlearner(firstname, lastname, dob): #TODO instead of carrying on in sequence, read whats written in action and call function based on that? 
+def processlearner(firstname, lastname, dob): 
     
     #1. Learner Lookup 
     print(f"Processing learner: {firstname} {lastname} {dob}")
@@ -1003,9 +1399,10 @@ def processlearner(firstname, lastname, dob): #TODO instead of carrying on in se
     
      
     #then iterate through courses, processing based on action map
-    success = actionmap_router(bio)
-    if not success:
-        return False
+    all_success, failed_action = actionmap_router(bio)
+    if not all_success:
+        print(f"Failed during action: {failed_action}")
+        return False #TODO return error message for easier debuggin
     else:
         return True
 
@@ -1020,11 +1417,9 @@ def processlearner(firstname, lastname, dob): #TODO instead of carrying on in se
 
 
 
-#--------------------------------------------------------CONTROLLER--------------------------------------------------------
+#--------------------------------------------------------EXCEL CONTROLLER--------------------------------------------------------
 
 
-#TODO step selection - input number in order to jump to process from/only that section?  **seems action can be read from table - mabye can use if sequence to option select functions?
-#TODO need to integrate multiple application functionality - mabye row counter and +1 to row when name appears again in pd-df2?
 
 
 
@@ -1050,7 +1445,6 @@ WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, "/html/bod
 print("> Manual override? (Y/N) ")
 manual_override = input().upper()
 
-
 if manual_override == 'Y':
     
     print("Enter the details for the learner you want to process.")
@@ -1062,25 +1456,18 @@ if manual_override == 'Y':
     print(f"--------[MANUAL] Processing: {searchfirstname} {searchlastname} {searchdob}--------")
     print("")
     
-
     processedchek = processlearner(searchfirstname, searchlastname, searchdob,)
 
     if processedchek == True:
 
         print(f"Processed {searchfirstname} {searchlastname} for successfully.\n")
              
-        
     else:
         print(f"Issue found with {searchfirstname} {searchlastname}, Human Intervention required.\n")
 
-    
-   
     driver.quit()
 
-
 else:
-
-
 
     Applicationlist = 'New Applications.xlsx'
     df2 = pd.read_excel(Applicationlist, usecols="C, E, G, N")
@@ -1096,6 +1483,7 @@ else:
 
     loopcounter = 0
     while loopcounter < entries:
+        excel_row = loopcounter + 2 
         try: 
             dffirstname = df2.iloc[loopcounter]['Forename']
             dflastname = df2.iloc[loopcounter]['Surname']
@@ -1107,8 +1495,6 @@ else:
             
             processedchek = processlearner(dffirstname, dflastname, stripdob)
 
-            excel_row = loopcounter + 2 
-
             if processedchek == True:
 
                 print(f"Processed {dffirstname} {dflastname} successfully.\n")
@@ -1118,7 +1504,7 @@ else:
                 continue
             
             else:
-                print(f"Issue found with {dffirstname} {dflastname} Human Intervention required.\n")
+                print(f"Issue found with {dffirstname} {dflastname}  ")
                 for cell in ws[excel_row]:
                     cell.fill = yellow_fill 
                     wb.save(Applicationlist)            
@@ -1127,26 +1513,12 @@ else:
         except Exception as e:
             print(f"Error processing {dffirstname} {dflastname}: {e}")
             for cell in ws[excel_row]:
-                cell.fill = yellow_fill 
+                cell.fill = yellow_fill
         finally:
             wb.save(Applicationlist) 
             loopcounter += 1  
 
     print("All learners processed.")
-    wb.save(Applicationlist)
     wb.close()
     print("Workbook saved with updates.")
     driver.quit()
-
-
-            
-
-
-    
-    
-   
-
-
-
-
-
