@@ -1,4 +1,4 @@
-# Application Automator - // - 23/10/2025 - WE ARE SO BACK - //
+# Application Automator // 12/12/2025 - finished//
 
 
 Application helper - scrapes data from Student BIO and completes application flowchart based on it. We complete hundreds of applications a day by hand - in theory automating the process would save us at least 2 hrs a day *EACH*. 
